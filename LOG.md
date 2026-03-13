@@ -92,6 +92,50 @@ where `GAP = 45`.
 
 ---
 
+## 2026-03-13 — Step 0 second run: validation + fixes
+
+### Bug: `mutations_sorted` stored raw nucleotides instead of differences
+
+**Error:** All three validation plots failed:
+- Plot 1 (mutation load): empty — all values at `n_mut_H = 149` (outside xlim 0–50)
+- Plot 2 (CDR enrichment): single bar at neutral expectation — `n_mut_CDR_H/n_mut_H ≈ 57/149 ≈ 0.382 = neutral`
+- Plot 3 (CDRH3 length): correctly computed (not affected)
+
+**Root cause:** Refactored cell 11 set:
+```python
+mutations_sorted = aligned_joint.select([KEY] + pos_cols)
+```
+`pos_cols` are the sequence nt column names. In `aligned_joint` those columns hold raw ASCII nucleotide values (65/67/71/84 = all non-zero), so every position was flagged as "mutated".
+
+**Fix (cell `11-mut-matrix`):** Apply the difference transformation explicitly before selecting:
+```python
+mutations_sorted = (
+    aligned_joint
+    .with_columns([(pl.col(c) - pl.col(f"{c}_germ")).alias(c) for c in pos_cols])
+    .select([KEY] + pos_cols)
+)
+```
+`aligned_joint` remains unchanged for numpy extraction.
+
+**Note:** The R/S classification was unaffected — it uses raw `seq_H`/`germ_H` arrays directly. The R/S values produced (R/S CDR ≈ 3.2 > neutral 2.9 → positive selection; R/S FWR ≈ 1.9 < neutral → purifying selection) are biologically correct.
+
+### Bug: CDRH3 length = 0 spike in plot, CDRL3 missing
+
+- `cdrh3_length = 0` observed for some sequences — truncated/incompletely assembled VH. Added to QC filter.
+- Light chain CDR3 length was not computed. Added `cdrl3_length` column using the same gap-aware counting logic on `L_REGIONS['CDR3']`.
+
+### Cells modified (second round)
+
+| Cell ID | Change | Reason |
+|---|---|---|
+| `11-mut-matrix` | Add `.with_columns(seq - germ)` before `.select()` to build `mutations_sorted` | Fix raw-nt-as-mutation bug |
+| `21-cdrh3-len` | Add `cdrl3_length` column; refactor to shared helper function | Missing light chain CDR3 length |
+| `23-qc` | Add `cdrh3_length == 0` and `cdrl3_length == 0` to QC fail set | Filter truncated sequences |
+| `25-assemble` | Pass through `cdrl3_length` in master join | New column |
+| `27-validate` | Stratify plot 1 by naive_strict/bio-only/comp-only/memory; fix plot 2 to use memory-only filter; fix plot 3 to show H and L CDR3 separately, exclude length=0 | Correct all three broken plots |
+
+---
+
 ### Data questions for follow-up
 
 1. **Why 49 duplicate seq_names from iggnition?** Are these truly duplicated input sequences, or a processing artefact? Worth checking if duplicates appear in the raw parquet too.
