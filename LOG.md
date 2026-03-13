@@ -138,7 +138,73 @@ mutations_sorted = (
 
 ### Data questions for follow-up
 
-1. **Why 49 duplicate seq_names from iggnition?** Are these truly duplicated input sequences, or a processing artefact? Worth checking if duplicates appear in the raw parquet too.
+1. **Why 49 duplicate seq_names from iggnition?** Root cause: germline numbering failures causing re-attempts (not duplicate input). Resolved by dedup before join.
 2. **Why 60% naive by bio label?** Experimental design likely explains this — confirm whether samples include explicitly sorted naive B cells.
 3. **Extreme outliers** (max VH = 120 codons, max total = 157) — check post-QC whether stop codon filter removes these or if additional curation is needed.
-4. **692,383 bio-naive but NOT comp-naive** — are these IgD+ cells (IgD not captured by `c_gene:0 == 'IGHM'` filter)? Clarify whether the dataset contains IgD-bearing sequences and how to classify them.
+4. **692,383 bio-naive but NOT comp-naive** — likely IgD+ cells (IgD ≠ IgM in `c_gene:0 == 'IGHM'` filter). Pending confirmation.
+
+---
+
+## 2026-03-13 — Step 0 final results: biological findings
+
+### Mutation count summary (validated — bimodal distribution confirmed)
+
+| Metric | mean | std | median | max |
+|--------|------|-----|--------|-----|
+| n_mut_H | 8.95 | 10.12 | 5 | 109 |
+| n_mut_L | 5.54 | 6.89 | 3 | 110 |
+| n_mut_FWR_H | 5.06 | 6.74 | 2 | 78 |
+| n_mut_FWR_L | 3.42 | 4.76 | 1 | 83 |
+| n_mut_total | 14.49 | 14.65 | 10 | 157 |
+
+n_mut_H mean=8.95 is consistent with published SHM data (bimodal: naive ~0, memory ~10–20). Max VH=109 and total=157 are extreme outliers — likely high-SHM memory cells; stop codon filter passed (0 stop codons detected), so these are not obvious artifacts.
+
+### Selection signals (R/S analysis — validated, from raw alignment arrays)
+
+| Region | n_R (mean±std) | n_S (mean±std) | R/S ratio | Interpretation |
+|--------|---------------|---------------|-----------|----------------|
+| CDR (H+L) | 4.12 ± 3.85 | 1.28 ± 1.58 | **3.21** | > neutral (~2.9) → **positive selection** |
+| FWR (H+L) | 5.41 ± 6.36 | 2.87 ± 3.72 | **1.88** | < neutral → **purifying selection** |
+
+CDRs accumulate beneficial replacements; FWRs resist destabilizing changes. Expected affinity maturation signature. These numbers anchor Φ_A and Φ_S calibration in Steps 2–3.
+
+### CDR3 length distributions
+
+| Chain | mean (aa) | std | median | min | max |
+|-------|-----------|-----|--------|-----|-----|
+| CDRH3 | 11.91 | 5.57 | 13 | 0 | 29 |
+| CDRL3 | 7.35 | 1.10 | 7 | 0 | 29 |
+
+CDRH3 distribution is as expected (human repertoire ~10–16 aa). CDRL3 is narrow around 7 (kappa chains), consistent with known biology.
+**Note:** CDRL3 max = 29 aa is unexpected (human CDRL3 should not exceed ~12 aa). This may indicate a minority of lambda chains or alignment artifacts in the L chain CDR3 span — flag for investigation.
+
+### QC outcomes
+
+| Filter | Count |
+|--------|-------|
+| Stop codons in VH | 0 |
+| Missing H alignment | 0 |
+| Missing L alignment | 49 |
+| CDRH3 length = 0 | 556,206 |
+| CDRL3 length = 0 | 15,858 |
+| **Total removed** | **570,010 (11.8%)** |
+| **Retained** | **4,269,981** |
+
+**CDRH3 = 0: biologically impossible alignment artifact.** Input is pre-filtered for complete VDJ. The 3′ primer anchors at CH1 onset → truncated mRNAs cannot be amplified. All 556,206 sequences with CDRH3=0 are iggnition CDR3 assignment failures. This is a surprisingly large fraction (11.5%) — worth investigating whether it is specific to certain donors, V genes, or CDR3 length ranges.
+
+### Population composition (validated)
+
+| Label | n | % |
+|-------|---|---|
+| naive_strict | 1,979,995 | 40.9% |
+| naive_bio | 2,914,772 | 60.2% |
+| naive_comp | 2,141,846 | 44.2% |
+| Bio/comp concordance | 3,735,806 | 77.2% |
+
+(Percentages are pre-QC. Post-QC population breakdown will shift slightly.)
+
+### Open questions
+
+1. Why does 11.5% of sequences have CDRH3=0? Is this specific to certain donors or V genes?
+2. CDRL3 max=29 aa — are these lambda chains or artifacts?
+3. Extreme mutation outliers (n_mut_H=109, total=157) — are these genuine hypermutated memory cells or should additional outlier thresholds be applied?
