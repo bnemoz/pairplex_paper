@@ -302,6 +302,135 @@ No germline reaches R_AID = 1.0. The WRC/RGYW density in FWR consistently exceed
 5. **Revised maturation ladder**: IgM ≈ null < IgE < IgA ≈ IgG. Use IgG (highest, most reliable n) as the "deep maturation" reference in downstream Φ_A calibration.
 
 **Runtime warning in V2:** `RuntimeWarning: invalid value encountered in cast` when converting null-containing Polars columns to numpy int32. Non-critical — fill_null(0) downstream handles it — but should be fixed by explicit null-filling before cast.
+
+---
+
+## 2026-03-15 — Step 2 results: review and biological findings
+
+### S1 — Position-specific ω (dN/dS per Aho position)
+
+**Method:** For each Aho AA codon position in the H V-region (FR1–CDR1–FR2–CDR2–FR3, 95 positions computed), ω = (dN_obs / E[dN]) / (dS_obs / E[dS]) with S5F-derived neutral expectation from a pooled consensus germline codon per position.
+
+**Results summary by region:**
+
+| Region | n positions | Mean ω | Median ω | SD ω |
+|--------|-------------|--------|----------|------|
+| FR1 | 24 | 0.789 | 0.338 | 1.136 |
+| CDR1 | 9 | **0.737** | 0.567 | 0.516 |
+| FR2 | 8 | 1.018 | 0.347 | 1.511 |
+| CDR2 | 11 | **1.301** | 0.560 | 2.140 |
+| FR3 | 43 | 0.916 | 0.682 | 0.991 |
+
+**Expected findings confirmed:**
+- FWR positions are predominantly ω < 1 (purifying selection) — consistent with structural constraint. The most extreme: Aho23/Cys23 (ω = 0.0017) and Aho106/Cys104 (ω = 0.00034), the two canonical disulfide cysteines. These are the most structurally locked positions in the entire V-region and serve as a strong positive control for the calculation.
+- FR3 mean ω = 0.92 — slightly below neutral, consistent with the framework role of stabilising CDR3 loop geometries.
+
+**Unexpected / notable findings:**
+
+1. **CDR1 mean ω = 0.74 < 1 (purifying selection in CDR1).** This contradicts the naive expectation that CDR1 should show positive selection like CDR2. Reconciliation: the CDR R/S ratio from Step 0 (R/S = 3.21 vs neutral 2.9) was computed pooled across CDR1+CDR2+CDR3. CDR3 dominates this signal because it is the primary antigen-contact loop. When CDR1 is evaluated individually at the per-position ω level (and CDR3 is excluded from this analysis), positions 26–33 show ω = 0.24–0.61, consistent with moderate purifying selection. Core CDR1 residues participate in antigen binding but also constrain CDR loop backbone geometry — the structural cost of CDR1 mutation is non-trivial.
+
+2. **CDR2 mean ω = 1.30 > 1 (slight positive selection), but highly variable (SD = 2.14).** The mean is inflated by position Aho62 (ω = 7.53, n_valid = 51,199 — a CDR2 insertion position present in only 3.5% of sequences). This high ω at a rare insertion position suggests that sequences which have extended CDR2 loops are under strong positive selection for replacements at these positions — biologically plausible. Without the outlier, median CDR2 ω = 0.56, which is in fact purifying. The correct interpretation is that the canonical CDR2 core (positions 50–61) is under mixed or purifying selection, while rare extended CDR2 variants show strong positive selection.
+
+3. **FR1/FR2 outliers with ω > 1:** Aho17 (ω = 2.33), Aho24 (ω = 5.49), Aho98 (ω = 5.81), Aho107 (ω = 2.27). These are framework positions showing positive selection signatures:
+   - **Aho24** (FR1, immediately preceding CDR1): ω = 5.49, n_valid = 1,468,868. This is a boundary position adjacent to CDR1 that participates in CDR loop presentation. Strong positive selection here is unexpected for a "framework" residue and may indicate this position is functionally involved in antigen contact or CDR1 loop anchoring.
+   - **Aho98** (FR3, adjacent to CDR3): ω = 5.81, n_valid = 1,469,689. FR3 positions immediately upstream of CDR3 (positions 94–108) are known CDR3-support residues. ω > 1 here is consistent with back-mutations or compensatory mutations coordinated with CDR3 evolution.
+
+4. **Missing positions (Aho 8, 28, 35–37, 63):** These positions are absent from the omega table, likely because they are Aho insertion positions (present in <10 sequences, filtered out by the `n_valid < 10` threshold). This is expected behaviour.
+
+5. **NaN ω for Met and Trp codons:** Positions Aho40 (Trp), Aho41 (Met), Aho43 (Trp), Aho55 (Met), Aho57 (Trp), Aho93 (Met) have no synonymous changes possible — these codons are encoded by a single codon (Trp = TGG, Met = ATG). ω is undefined. These include the highly conserved Trp41 and Trp103 of the VH fold (canonical disulfide loop and hydrophobic core residues). Their structural importance is real but cannot be captured by ω — they must be treated separately in the Φ_S framework.
+
+**Concern — pooled consensus germline:** The neutral expectation uses a single consensus codon per position (mode across all memory sequences). This conflates sequences from different germline V-genes that may have different codons at the same Aho position, producing a "phantom germline" that may not represent any real sequence. For positions with high germline diversity (especially CDR boundary positions), the consensus codon and its E[dN/dS] fractions may be systematically wrong. **This should be re-computed per-germline gene for the paper.** However, for a pooled overview of selection pressure across the V-region, the current approach is a valid first-pass.
+
+---
+
+### S2 — Forbidden mutations / Φ_S filter
+
+**Method:** `phi_S_filter(i) = log(expected_freq_i / (observed_freq_i + ε))` where `expected_freq_i = s5f_weight_i / Σ s5f_weights` and `observed_freq_i = (n_R_obs_i + n_S_obs_i) / n_valid_i`.
+
+**Critical bug: all phi_S_filter values are negative.**
+
+The figure shows every single position as "enriched beyond expectation" (red bars, all below zero). Not one position shows Φ_S > 0. This is biologically impossible — we know from S1 that Cys23 and Cys104 are among the most structurally constrained positions in the V-region, and they should appear as highly constrained here too.
+
+**Root cause — incompatible scales:**
+- `expected_freq` is the **per-mutation-event probability** that a random SHM event lands at position i. This is a small number (~0.002–0.060 for individual codons across the V-region budget).
+- `observed_freq` is the **per-sequence mutation rate** — the fraction of memory sequences that carry a mutation at position i. This is naturally larger by a factor equal to the mean number of V-region SHM events per memory sequence (~7–9 for the V-gene positions included here).
+
+For a position with `expected_freq = 0.01` (1% of mutations land here) and mean ~8 V-region mutations per sequence, the expected per-sequence mutation frequency is `1 - (1-0.01)^8 ≈ 7.7%`. If the observed per-sequence rate is 5% (suppressed by selection), then `phi_S = log(0.077 / 0.05) = +0.43` — correctly positive. But with the current formula: `phi_S = log(0.01 / 0.05) = -1.6` — incorrectly negative.
+
+**Fix required:** Scale `expected_freq` by mean V-region mutation count per memory sequence before computing the log-ratio:
+```python
+mean_V_mut = master.filter(~naive_bio & ~naive_comp)['n_mut_H'].mean()  # V-region mutations only
+# or approximate from n_mut_H × (fraction of positions that are V-region / total H positions)
+expected_per_seq = 1 - (1 - expected_freq) ** mean_V_mut  # exact
+# or approximation for small p:
+expected_per_seq = expected_freq * mean_V_mut
+phi_S_filter = log(expected_per_seq / (observed_freq + epsilon))
+```
+
+**Partial salvage — ranking is preserved:** Despite the absolute values being wrong, the RANKING of Φ_S is still meaningful. The positions least negative (= least "enriched", = most constrained) are:
+1. Aho106 / Cys104 (phi_S = −1.525, ω = 0.00034) — canonical disulfide
+2. Aho23 / Cys23 (phi_S = −1.535, ω = 0.0017) — canonical disulfide
+3. Aho45 / Arg45 (phi_S = −1.548, ω = 0.013) — conserved FR2 salt bridge
+4. Aho100 (phi_S = −1.71)
+
+These are exactly the positions one expects to be most structurally constrained. The ranking is correct — only the absolute scale needs fixing.
+
+The most negative phi_S positions (supposedly most "enriched") are:
+- Aho62/CDR2-insertion (phi_S = −4.30, ω = 7.53) — positive selection hotspot
+- Aho98/FR3 (phi_S = −4.06, ω = 5.81) — CDR3-adjacent positive selection
+- Aho24/FR1 (phi_S = −4.01, ω = 5.49) — CDR1-adjacent positive selection
+
+This is internally consistent: the most highly mutated positions (observed_freq >> expected_freq) appear as most negative in Φ_S AND have the highest ω. Both S1 and S2 agree on which positions are under positive selection — they just use different (complementary) metrics.
+
+**Action: cell `14-forbidden-compute` in `02_phi_structure.ipynb` must be fixed before using S2 values in downstream Steps 5–6.**
+
+---
+
+### S3 — VH/VL Vernier zone mutual information
+
+**Method:** Pairwise Miller-Madow corrected MI between AA identity at VH Vernier positions [2, 47, 48, 67, 69, 71, 78, 93, 94] and VL Vernier positions [2, 36, 46, 48, 49, 64, 66, 68, 71] across all 1,517,911 paired memory sequences.
+
+**Results:**
+
+All MI values are effectively zero (range: 0.000–0.012 bits). The highest value is VH69–VL66 (MI = 0.0119 bits, n = 4,667).
+
+**VL position coverage issues:**
+| VL position | n_valid | Notes |
+|-------------|---------|-------|
+| VL2 | ~1,514,000 | Full coverage |
+| VL36 | ~103,600 | Insertion position — present in ~7% of kappa sequences |
+| VL46–49, 68, 71 | ~1,511,000–1,514,000 | Full coverage |
+| VL64 | **0** | Position entirely absent from alignment — outside Aho space for all light chains in this dataset |
+| VL66 | ~4,667 | Rare insertion position — present in <0.3% of sequences |
+
+VL64 produces zero valid pairs for all VH positions — this column must be removed from the analysis entirely. VL36 and VL66 have severely reduced coverage, making their MI estimates unreliable.
+
+**Biological interpretation of near-zero MI:**
+
+Two explanations, likely both contributing:
+
+1. **Genuine biological finding:** The VH/VL Vernier zone does not show detectable co-evolution of amino acid identity in the paired memory repertoire. This is consistent with the picture that: (a) Vernier zone residues are largely germline-encoded and fixed within a germline gene family; (b) SHM rarely targets core Vernier residues because they are in FWR positions under strong purifying selection (as seen in S1); and (c) VH and VL chains are optimised by evolution at the germline level to be compatible, not by somatic hypermutation.
+
+2. **Methodological limitation:** MI computed on **absolute AA identity** is dominated by germline gene choice, not by somatic mutation. If IGHV3-23 always has one amino acid at VH67 and IGHV1-69 has another, the "co-variation" with the light chain is driven by VH gene usage correlating with VL gene usage (known pairing biases), not by SHM. The correct approach would be MI on **mutation co-occurrence** (binary: is position i mutated in this sequence?) — this isolates the somatic signal and removes germline confounding. This should be implemented in a revised S3.
+
+**The VH69–VL66 signal (MI = 0.0119, highest):** Both VH69 and VL66 are interface-proximal positions. VH69 (Aho position 69) sits in FR3 at the VH/VL packing surface. That the highest MI is in this pair is biologically coherent even if the absolute magnitude is tiny — this pair may warrant specific investigation.
+
+---
+
+### Summary table — Step 2
+
+| Calculation | Status | Key finding | Action required |
+|-------------|--------|-------------|-----------------|
+| S1: ω per position | **Valid** | CDRs mixed: CDR2 ω > 1 (positive), CDR1 ω < 1 (purifying); Cys23/Cys104 are strongest structural anchors; FR1/FR3 outliers at CDR-adjacent positions | Re-compute per germline for paper; NaN positions (Trp/Met) need separate treatment |
+| S2: Φ_S filter | **Bug — fix required** | ALL values negative due to scale mismatch (per-event vs per-sequence); ranking is correct but absolute values are inverted | Multiply `expected_freq` by mean V-region mutation count per sequence before log-ratio |
+| S3: VH/VL MI | **Weak signal — method revision needed** | Near-zero MI across all pairs; VL64 has zero coverage; near-zero likely reflects germline dominance of identity co-variation, not somatic co-evolution | Recompute on mutation co-occurrence (binary mutated/not) rather than absolute AA identity; remove VL64 |
+
+### Open questions from Step 2
+
+1. Why does CDR1 show purifying selection (ω < 1) while the pooled CDR R/S from Step 0 was 3.21 > neutral? → Likely because CDR3 dominates the R/S signal. Per-region R/S (CDR1 alone, CDR2 alone, CDR3 alone) should be extracted from the Step 0 data to confirm.
+2. What drives the strong positive selection outliers at FR1/FR3 boundary positions (Aho24 ω=5.49, Aho98 ω=5.81)? → Check whether these overlap with known CDR-loop contact residues or heavy-chain packing residues.
+3. After fixing S2 scale: do Cys23 and Cys104 become the highest Φ_S positions (most constrained)? They should, based on the ω data.
+4. Does MI on mutation co-occurrence (S3 revision) reveal genuine somatic co-adaptation at the VH/VL interface?
 =======
 2. CDRL3 max=29 aa — are these lambda chains or artifacts?
 3. Extreme mutation outliers (n_mut_H=109, total=157) — are these genuine hypermutated memory cells or should additional outlier thresholds be applied?
