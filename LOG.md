@@ -552,3 +552,141 @@ The highest-phi pair (VH94-VL68: phi=0.018, well-covered at n=1.46M) shows a cor
 5. **Columns confirmed in aligned_master.parquet:** `n_R_CDR_H`, `n_S_CDR_H`, `n_R_FWR_H`, `n_S_FWR_H`, `c_gene:0`, `v_gene:0`, `donor`, `clonotype`, `lineage`, `junction_aa:0`, `cdrh3_length`, `naive_bio`, `naive_comp`.
 
 **Notebook:** `calculations/03_phi_affinity.ipynb` — coded 2026-03-15.
+
+---
+
+## 2026-03-15 — Step 3 results: Φ_A initial run + corrections (v2)
+
+### A1 — CDR Replacement Enrichment (per-sequence Φ_A)
+
+**RS_neutral computation:**
+| Region | Positions used | RS_neutral |
+|--------|---------------|-----------|
+| CDR1 | 9 | 4.267 |
+| CDR2 | 14 | 3.107 |
+| CDR1+CDR2 pooled | 23 | **3.504** |
+
+S5F-weighted pooled RS_neutral = **3.504**. CDR1 has a higher neutral R/S ratio than CDR2 (not lower), meaning the per-codon expected replacement fraction is actually *larger* for CDR1, even though CDR1 is under purifying selection (ω<1). The apparent contradiction resolves when you remember that RS_neutral is the expectation under pure sequence composition + S5F mutability (no selection), while ω measures the actual observed over the expected. The pooled value of 3.504 is used for all Φ_A calculations.
+
+**Per-sequence Φ_A distribution (memory, n=1,460,550 scored):**
+| Statistic | Value |
+|-----------|-------|
+| Mean | 0.274 |
+| Median | 0.272 |
+| Std | 1.047 |
+| Min | −2.330 |
+| Max | 6.908 |
+| Fraction δ_RS > 1 (positive selection) | 36.9% |
+
+Φ_A ≈ 0 at the median: the median memory sequence has approximately neutral CDR R/S. 36.9% of memory sequences have above-neutral R/S (δ_RS > 1 → positive affinity selection signal). Max Φ_A = 6.908 corresponds to δ_RS ≈ 0 (all-silent CDR mutations, log(0+ε) = −6.9).
+
+**Φ_A by isotype class (subclasses collapsed):**
+- IgG and IgA classes have lower mean Φ_A than IgM → consistent with deeper GC maturation in class-switched cells selecting for higher CDR R/S.
+- IGHA2 (now collapsed to IgA) had mean n_mut_H = 21.2 vs IGHM = 13.8, confirming IgA sequences are more mature.
+
+---
+
+### A2 — Convergent Response Analysis
+
+**Initial run (buggy):** Used raw `clonotype` identifier (barcode-named cluster IDs) to count donors per clonotype. Found 3,425 public clonotypes (≥3 donors). Counterintuitively, public sequences had HIGHER Φ_A (0.419) than private (0.272), meaning public clonotypes appeared *less* affinity-selected. This is likely an artefact of CDRH3 length confound (public CDRH3 mean = 10.9 aa vs private = 12.7 aa → shorter CDRs → fewer CDR mutations → higher Φ_A).
+
+**Correction (v2 → v3):** The biological question is: *"How many independent donors produce a memory B cell with this antigen-contact fingerprint?"* The unit of analysis is the **donor** — not the cell, not the lineage.
+
+Implementation:
+1. `unique(subset=['donor', 'v_gene:0', 'junction_aa:0'])` — one vote per donor per (V-gene, CDRH3_aa) group
+2. Count unique donors per group. Public if ≥3 donors.
+
+All memory cells are retained for downstream analyses (Φ_A distributions, isotype composition, etc.). The deduplication only prevents a single donor with 1000 cells of the same CDRH3 from counting as 1000 donors — it does not discard information.
+
+**v2 error (corrected in v3):** v2 introduced an intermediate step "one representative per (lineage, donor)" before the donor deduplication. This was logically redundant — the operative step was always the (donor, v_gene, junction_aa) deduplication. The lineage step added unnecessary complexity and wrongly implied that `lineage` is the grouping unit for convergence. Lineage is the correct unit for *within-donor clonal family* analyses (A3), not for *cross-donor convergence* (A2). Removed in v3.
+
+**Why (V-gene + CDRH3_aa) and not `clonotype`:**
+- `clonotype` requires VH+VL+JH+JL+exact CDRH3. Too restrictive: the same epitope can recruit responses using different light chains (VL convergence is weaker than VH). Requiring VL+JL match would miss many genuine convergent responses.
+- `clonotype` may operate at nucleotide resolution. In memory, SHM produces synonymous variation across donors — same CDR3 amino acid loop, different nucleotide sequence. Amino acid grouping correctly captures these as the same functional response.
+- (VH + CDRH3_aa) is the standard minimal public clonotype definition in the literature (SARS-CoV-2, influenza, HIV convergence studies).
+- VH is included because CDR1/CDR2 are part of the paratope — the same CDRH3 on two different V-genes produces a different binding surface.
+
+**⚠ Paper-writing note (anticipated reviewer questions):**
+This definition will puzzle many immunologists. Key objections to anticipate and address:
+1. *"Why not use exact clonotype (VH+VL+JH+JL+CDR3)?"* → Because VL is not required for heavy-chain convergence, and nucleotide-level matching excludes synonymous SHM variants in memory that are functionally identical.
+2. *"Are you sure two donors with the same VH+CDRH3_aa aren't just sharing a common germline configuration rather than antigen-selected convergence?"* → This is a real concern. All VH+CDRH3 combinations where CDRH3 matches the germline D-gene reading frame exactly (no N-additions, no mutations) should be flagged as potentially germline-configured (not SHM-convergent). Suggest adding a filter: require ≥1 somatic mutation in CDRH3 or ≥1 N-nucleotide addition in the CDR3.
+3. *"Why CDRH3 amino acid and not CDRH3 nucleotide?"* → In memory, cells from the same response in different donors have accumulated independent synonymous mutations. They share antigen specificity (same amino acid loop) but not nucleotide history. Amino acid is the functional unit.
+4. *"Shouldn't you account for CDRH3 length bias?"* → Yes. Shorter CDR3s are more likely to be shared by chance (combinatorial probability). The public threshold of ≥3 donors should be validated against a null model (random shuffling of CDR3s within V-gene bins). Add permutation test in supplementary material.
+
+`clonotype` identifier is reserved for the **naive compartment** only, where it captures recurring RAG recombinations (identical VDJ rearrangements arising independently by chance in multiple donors — a distinct biological phenomenon).
+
+---
+
+### A3 — Isotype-Stratified Affinity Proxy (Within Lineages)
+
+**Mixed IgM+IgG lineages:** 1,528 lineages contain both IgM and IgG members. Of these, 192 have ≥2 IgM members AND ≥2 IgG members (sufficient for per-lineage comparison).
+
+**Within-lineage IgG vs IgM Φ_A shift (n=192 lineages):**
+| Statistic | Value |
+|-----------|-------|
+| Mean ΔΦ_A (IgG − IgM) | −0.069 |
+| Fraction lineages where IgG < IgM (IgG more selected) | 53.1% |
+
+The mean shift is small (−0.069) but in the expected direction. Only 53.1% of lineages show the predicted IgG-more-selected pattern (expected >50% but weak signal). This may reflect:
+1. Low statistical power (most lineages have n=2 per class — high within-class variance)
+2. Some lineages undergo class switch early in GC without additional CDR selection (Φ_A shift not driven purely by isotype)
+3. IgM memory cells in the same lineage as IgG may actually be non-GC IgM memory (formed outside the GC after early class-switch progenitor)
+
+**Top lineages with strongest IgG affinity improvement:**
+- `purse_west_cereal_spread_deciduous...`: ΔΦ_A = −3.723 (IgM: Φ_A=3.59, n_mut=6; IgG: Φ_A=−0.13, n_mut=18)
+- `soap_summer_minimum_sniff_witness...`: ΔΦ_A = −3.453
+
+**Per-germline Φ_A shift (lineages with ≥10 mixed lineages):** Only **8 germlines** met threshold. Top:
+| Germline | n_lineages | mean_delta_phi_A |
+|----------|-----------|-----------------|
+| IGHV4-39 | ≥10 | −0.524 (strongest selection) |
+| IGHV3-23 | ≥10 | −0.381 |
+| IGHV3-53 | ≥10 | +0.279 (least selected / counter-selected) |
+
+Only 8 germlines is low. The ≥10-lineage threshold is strict given the small number of informative mixed lineages (192 total). This suggests that within-lineage IgM/IgG co-presence is rarer than expected — possibly because most class-switch events happen early (when few IgM memory cells survive the GC) or IgM memory and IgG memory are formed via distinct differentiation pathways from common progenitors rather than sequential IgM→IgG within the same lineage.
+
+---
+
+### Corrections applied to notebook 3 (v2) — 2026-03-15
+
+1. **Isotype subclass collapse:** Added cell `03b-isotype-collapse` immediately after loading. IGHG1/2/3/4 → IgG, IGHA1/2 → IgA, propagated to `phi_a_df` via `isotype_class` column. All downstream cells use `isotype_class` instead of raw `c_gene:0`. Rationale: subclass assignment from short-read sequencing is not reliable (assignment errors of IGHA1 vs IGHA2 and IGHG1-4 subclasses are common; biological subclass differences are not relevant to Φ_A).
+
+2. **Calculation verification:** Φ_A formula confirmed correct:
+   - ε = 1e-3 added to δ_RS (not to numerator/denominator separately)
+   - PSEUDO_S = 0.5 Bayesian pseudocount on silent count
+   - φ_A(δ_RS=1.0) = −log(1.001) ≈ −0.001 ≈ 0 ✓ (neutral sequences correctly score ≈ 0)
+   - Max = 6.908 for δ_RS=0 sequences (all-silent CDR mutations) ✓
+   - No bias from epsilon for the range of observed δ_RS values
+
+3. **A2 biology fix:** Replaced `clonotype`-based donor counting with lineage-deduped (V-gene, CDRH3_aa) approach. One vote per (lineage, donor) per group; deduplicated by (donor, v_gene, junction_aa). `clonotype` reserved for naive compartment only.
+
+---
+
+## 2026-03-15 — Step 4 planning + notebook creation: Φ_R
+
+### Design decisions
+
+**R1 — Reactivity logistic regression:**
+- Features: H_H3 (Kyte-Doolittle mean), Q_H3 (net charge), L_H3 (CDR3 length), Y_H3 (aromatic fraction)
+- CDR3 = junction_aa[1:-1] (strip anchor Cys at 104 and Trp/Phe at 118)
+- Labels: naive=0, memory=1 (autoreactive sequences depleted from memory → negative coefficients = reactive risk features)
+- L2 logistic regression, StandardScaler on continuous features only
+- Balanced subsample: 200k naive + 200k memory, stratified implicitly by V-gene frequency
+- V-gene one-hot covariates for germlines with ≥500 sequences in both compartments
+- IGHV4-34 binary indicator: positive control for germline-level autoreactivity (anti-I/H antigen, CDR1/CDR2-mediated)
+- Φ_R(x) = −logit(P_memory(x)) [high = naive-like features = high reactivity risk]
+
+**R2 — Per-germline shift:**
+- Mean Φ_R naive vs memory per germline (≥500 sequences per compartment)
+- ΔΦ_R = memory − naive [negative = autoreactive sequences depleted]
+- IGHV4-34 highlighted in plots
+- Isotype stratification: IgG memory Φ_R vs IgM memory Φ_R (IgG expected lowest risk)
+
+**Key validation expectations:**
+- IGHV4-34 ξ coefficient in logistic regression should be negative (IGHV4-34 depleted in memory)
+- Q_H3 coefficient should be negative (positive charge → anti-DNA risk → depleted from memory)
+- Y_H3 coefficient likely negative (high aromatic → polyreactivity → depleted)
+- H_H3 sign is less clear: hydrophobicity correlates with polyreactivity (negative expected), but also with antigen contact (positive selection in GC)
+- IgG memory should show lower mean Φ_R than IgM memory (deeper GC maturation → more thorough tolerance)
+
+**Notebook:** `calculations/04_phi_reactivity.ipynb` — coded 2026-03-15.
