@@ -176,7 +176,11 @@ CDRs accumulate beneficial replacements; FWRs resist destabilizing changes. Expe
 | CDRL3 | 7.35 | 1.10 | 7 | 0 | 29 |
 
 CDRH3 distribution is as expected (human repertoire ~10–16 aa). CDRL3 is narrow around 7 (kappa chains), consistent with known biology.
+<<<<<<< HEAD
 **Note:** CDRL3 max = 29 aa is biologically real — the distribution is centred ~7–9 aa but the tail extends to 30–35 aa (rare but genuine). Not an artifact.
+=======
+**Note:** CDRL3 max = 29 aa is unexpected (human CDRL3 should not exceed ~12 aa). This may indicate a minority of lambda chains or alignment artifacts in the L chain CDR3 span — flag for investigation.
+>>>>>>> origin/main
 
 ### QC outcomes
 
@@ -206,6 +210,7 @@ CDRH3 distribution is as expected (human repertoire ~10–16 aa). CDRL3 is narro
 ### Open questions
 
 1. Why does 11.5% of sequences have CDRH3=0? Is this specific to certain donors or V genes?
+<<<<<<< HEAD
 2. Extreme mutation outliers (n_mut_H=109, total=157) — are these genuine hypermutated memory cells or should additional outlier thresholds be applied?
 
 ---
@@ -297,3 +302,7 @@ No germline reaches R_AID = 1.0. The WRC/RGYW density in FWR consistently exceed
 5. **Revised maturation ladder**: IgM ≈ null < IgE < IgA ≈ IgG. Use IgG (highest, most reliable n) as the "deep maturation" reference in downstream Φ_A calibration.
 
 **Runtime warning in V2:** `RuntimeWarning: invalid value encountered in cast` when converting null-containing Polars columns to numpy int32. Non-critical — fill_null(0) downstream handles it — but should be fixed by explicit null-filling before cast.
+=======
+2. CDRL3 max=29 aa — are these lambda chains or artifacts?
+3. Extreme mutation outliers (n_mut_H=109, total=157) — are these genuine hypermutated memory cells or should additional outlier thresholds be applied?
+>>>>>>> origin/main
