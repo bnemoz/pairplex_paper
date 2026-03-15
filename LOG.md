@@ -176,7 +176,11 @@ CDRs accumulate beneficial replacements; FWRs resist destabilizing changes. Expe
 | CDRL3 | 7.35 | 1.10 | 7 | 0 | 29 |
 
 CDRH3 distribution is as expected (human repertoire ~10–16 aa). CDRL3 is narrow around 7 (kappa chains), consistent with known biology.
+<<<<<<< HEAD
+**Note:** CDRL3 max = 29 aa is biologically real — the distribution is centred ~7–9 aa but the tail extends to 30–35 aa (rare but genuine). Not an artifact.
+=======
 **Note:** CDRL3 max = 29 aa is unexpected (human CDRL3 should not exceed ~12 aa). This may indicate a minority of lambda chains or alignment artifacts in the L chain CDR3 span — flag for investigation.
+>>>>>>> origin/main
 
 ### QC outcomes
 
@@ -206,5 +210,99 @@ CDRH3 distribution is as expected (human repertoire ~10–16 aa). CDRL3 is narro
 ### Open questions
 
 1. Why does 11.5% of sequences have CDRH3=0? Is this specific to certain donors or V genes?
+<<<<<<< HEAD
+2. Extreme mutation outliers (n_mut_H=109, total=157) — are these genuine hypermutated memory cells or should additional outlier thresholds be applied?
+
+---
+
+## 2026-03-13 — Step 1 results: V1–V4 biological findings
+
+### Dataset composition (post-QC)
+
+| Subset | n |
+|--------|---|
+| Total | 4,269,981 |
+| naive_strict | 1,765,330 |
+| memory (not naive_bio, not naive_comp) | 1,517,911 |
+
+Memory is dominated by IgM: 839,304 / 1,517,911 = **55.3%** class-unswitched. This reflects the experimental design.
+
+---
+
+### V1 — S5F Mutability profile
+
+- 20,263,068 synonymous mutations identified across 432,344,130 opportunities (~4.7% global synonymous rate)
+- 233 unique 5-mer contexts observed (out of 1024 possible; constrained by germline composition)
+- Normalised max mutability = **5.71** — consistent with strongest known AID hotspots
+
+**Hotspot density in H V-region (FR1–FR3, CDR1–CDR2):**
+
+| Type | Count | % of 324 positions |
+|------|-------|--------------------|
+| neutral | 216 | 66.7% |
+| edge | 37 | 11.4% |
+| WRC (AID) | 21 | 6.5% |
+| SYC_cold | 19 | 5.9% |
+| WA (Polη) | 14 | 4.3% |
+| TW (Polη) | 13 | 4.0% |
+| RGYW (AID) | 4 | 1.2% |
+
+Total AID (WRC+RGYW): **7.7%** of V-region positions. This is the empirically-derived S5F model; will be used as the neutral expectation for Φ_A and ω_i calculations in Steps 2–3.
+
+**Note:** The profile is computed on a pooled consensus germline (all sequences collapsed to mode per Aho position). Per-germline profiles are derived separately in V2.
+
+---
+
+### V2 — R_AID: AID hotspot enrichment CDR vs FWR
+
+**Major unexpected finding: R_AID < 1 for ALL 55 IGHV germlines.**
+
+| Rank | Gene | R_AID | n |
+|------|------|-------|---|
+| 1 | IGHV2-26 | 0.762 | 36,302 |
+| 2 | IGHV3-33 | 0.752 | 113,049 |
+| 3 | IGHV3-72 | 0.752 | 20,202 |
+| ... | ... | <0.76 | ... |
+
+No germline reaches R_AID = 1.0. The WRC/RGYW density in FWR consistently exceeds CDR density.
+
+**Interpretation:** This is consistent with published findings (e.g., Dorner et al., Shapiro et al.) — AID does not preferentially target CDRs based on germline sequence motif density alone. The CDR enrichment of SHM observed empirically arises from selection (beneficial replacements in CDRs are retained; FWR replacements are purged), not from intrinsic germline AID hotspot pre-wiring. R_AID as a "pre-wiring" metric is therefore uninformative at this level. The finding is biologically real and should be discussed in the paper.
+
+**Impact on DESIGN.md:** The DESIGN.md expected some germlines to have R_AID > 1. This was not observed. The figure (fig_v2_raid_top40) will show a bar chart entirely left of the neutral line — this is itself the result.
+
+---
+
+### V3 — CDRH3 length vs V-region SHM load
+
+- Linear regression: slope=0.121, **R²=0.002**, p≈0 (statistically significant at n=1.5M, biologically negligible)
+- Each additional CDR3 aa adds ~0.12 V-gene mutations on average
+
+**Anomaly at 22–23 aa bin:** Mean drops to 13.8 (n=24,918) vs ~17 for adjacent bins. This is reproducible (n is large). Likely reflects a structurally distinct CDR3 category — possibly sequences with a specific D-gene usage or a biased V-gene group that uses long HCDR3s but low SHM.
+
+**Conclusion for downstream modelling:** CDRH3 length has negligible predictive power for V-region SHM. These can be treated as independent in the Φ_A framework.
+
+---
+
+### V4 — Mutation accumulation by isotype
+
+| Isotype | n | Mean n_mut_H | Median |
+|---------|---|-------------|--------|
+| null | 47,290 | 13.3 | 13 |
+| IgM | 839,304 | **13.8** | 13 |
+| IgD | 36 | 14.5 | 14 |
+| IgE | 721 | **19.7** | 19 |
+| IgA | 378,080 | **21.2** | 21 |
+| IgG | 252,464 | **22.0** | 21 |
+
+**Key findings:**
+1. **IgM memory = 13.8 mutations**: Substantial SHM in unswitched memory. These are GC-derived, class-unswitched memory B cells — biologically expected and consistent with published repertoire data.
+2. **IgA ≈ IgG, and IgA < IgG**: Contradicts the DESIGN.md assumption of IgM < IgG < IgA ordering. IgA populations include T-independent switching (gut mucosa, marginal zone) which generates lower-SHM sequences and dilutes the mean. The Poisson maturation model cannot be applied with IgA > IgG assumption.
+3. **IgE < IgA/IgG**: Consistent with sequential switching model (IgE arises from IgG1 by secondary switching, not direct GC-naïve switching).
+4. **47,290 null-isotype**: Mean 13.3 ≈ IgM. Likely unassigned IgM or early GC members. Group with IgM for Poisson fitting.
+5. **Revised maturation ladder**: IgM ≈ null < IgE < IgA ≈ IgG. Use IgG (highest, most reliable n) as the "deep maturation" reference in downstream Φ_A calibration.
+
+**Runtime warning in V2:** `RuntimeWarning: invalid value encountered in cast` when converting null-containing Polars columns to numpy int32. Non-critical — fill_null(0) downstream handles it — but should be fixed by explicit null-filling before cast.
+=======
 2. CDRL3 max=29 aa — are these lambda chains or artifacts?
 3. Extreme mutation outliers (n_mut_H=109, total=157) — are these genuine hypermutated memory cells or should additional outlier thresholds be applied?
+>>>>>>> origin/main
