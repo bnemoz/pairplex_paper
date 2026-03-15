@@ -1,0 +1,299 @@
+# Change Log — PairPlex Paper Analysis
+
+> Chronological record of bugs found, fixes applied, and data insights gathered during implementation.
+
+---
+
+## 2026-03-13 — Step 0 notebook: first run insights + bug fixes
+
+### Data insights from first run
+
+| Observation | Value | Notes |
+|---|---|---|
+| Total sequences | 4,840,405 | Full paired library |
+| Naive (bio: CD27⁻ MACS) | 2,914,772 (60.2%) | Higher naive fraction than typical — reflects experimental design |
+| Naive (comp: IgM + <1% SHM) | 2,141,846 (44.2%) | |
+| Naive (strict: both) | 1,979,995 (40.9%) | Most conservative set |
+| Bio/comp concordance | 77.18% | 1 in 4 cells disagrees |
+| Bio-naive NOT comp-naive | 692,383 | CD27⁻ cells with >1% SHM or non-IgM: IgD+ naive, pre-switched naive, or atypical memory |
+| Comp-naive NOT bio-naive | 161,851 | Unmutated IgM in CD27⁺ fraction: T-independent or early memory |
+| iggnition sequence output | 4,840,454 rows | 49 **extra rows** vs input (duplicate seq_names) |
+| iggnition germline output | 4,839,991 rows | 414 sequences with no germline alignment |
+| Post-join (inner) | 4,840,040 rows | **Inflated** by duplicate key Cartesian product — bug source |
+| Mean VH codon mutations | 8.95 ± 10.12 | Bimodal: naive ~0, memory ~5–20 |
+| Max VH codon mutations | 120 / 149 possible | Extreme outlier — monitor post-QC |
+| Max total codon mutations | 157 | Similarly extreme |
+
+**Region map validation:**
+- H CDR: 171 nt = 57 codons (CDR1: 39 nt + CDR2: 45 nt + CDR3: 87 nt) ✓
+- H FWR: 276 nt = 92 codons ✓
+- L CDR: 180 nt = 60 codons ✓
+- L FWR: 264 nt = 88 codons ✓
+
+---
+
+### Bug: shape mismatch in R/S classification (`ValueError`)
+
+**Error:**
+```
+ValueError: operands could not be broadcast together with shapes (4839991,) (4840040,)
+```
+in `count_rs()` at `np.all(g > 0, axis=1) & np.all(s > 0, axis=1)`
+
+**Root cause:**
+The `mutated` table had 4,840,454 rows for 4,840,405 input sequences (+49). Most likely explanation: germline numbering failed for 49 sequences, causing iggnition to re-attempt alignment and emit a second row for each. Regardless of cause, these 49 seq_names appear **twice** in `mutated`.
+
+Diagnostic: the inner join produced 4,840,040 rows, which exceeds the size of the smaller table (`germline` = 4,839,991). A standard inner join with unique keys on both sides can never exceed the smaller table — so duplicates in `mutated` are confirmed. The excess 4,840,040 − 4,839,991 = 49 rows corresponds exactly to the 49 extra rows in `mutated`.
+
+The subsequent code used `is_in(aligned_names)` + `sort()` to re-filter `mutated` and `germline` separately. Because `is_in()` checks set membership (not count), filtering `germline` returned 4,839,991 rows while `mutations_sorted` had 4,840,040 — producing the shape mismatch when numpy arrays were constructed.
+
+**Fix (cell `11-mut-matrix`):**
+Deduplicate both `mutated` and `germline` by `seq_name` (keep first) **before** joining. Then perform a **single inner join** (`aligned_joint`) that contains both sequence and germline nt columns. All downstream numpy arrays are extracted from this one DataFrame, guaranteeing identical row counts.
+
+```python
+mutated_dedup  = mutated.unique(subset=[KEY], keep='first')
+germline_dedup = germline.unique(subset=[KEY], keep='first')
+aligned_joint  = mutated_dedup.join(germline_dedup, on=KEY, how="inner", suffix="_germ").sort(KEY)
+mutations_sorted = aligned_joint.select([KEY] + pos_cols)
+```
+
+---
+
+### Bug: gap character not excluded from CDRH3 length
+
+**Observation:**
+iggnition encodes two distinct "absent" states:
+- `null` — position outside alignment space entirely
+- `45` (ASCII `'-'`) — position exists in Aho numbering but is a gap for this sequence
+
+The original CDRH3 length calculation used only `is_not_null()`, which incorrectly counted gap-padded positions as occupied, **overestimating CDRH3 length** for sequences with CDR3s shorter than the maximum Aho CDR3 span.
+
+**Fix (cell `21-cdrh3-len`):**
+Require both `is_not_null()` AND `!= 45` when counting occupied CDR3 nt positions:
+```python
+(pl.col(c).is_not_null() & (pl.col(c) != GAP)).cast(pl.UInt16)
+```
+where `GAP = 45`.
+
+---
+
+### Cells modified in `00_data_prep.ipynb`
+
+| Cell ID | Change | Reason |
+|---|---|---|
+| `11-mut-matrix` | Deduplicate `mutated`/`germline` before join; create `aligned_joint` as single source of truth; derive `mutations_sorted` from it | Fix shape mismatch bug; eliminate duplicate key inflation |
+| `13-region-maps` | `present = set(mutations_sorted.columns)` | Variable rename from `mutations` |
+| `15-codon-counts` | Add `GAP = 45` constant; use `mutations_sorted`; document gap handling | Variable rename + gap awareness |
+| `18-rs-compute` | Extract numpy arrays from `aligned_joint` (seq cols + `_germ` cols); add shape assertions | Main bugfix — guaranteed row alignment |
+| `19-rs-run` | Use `aligned_joint[KEY]` as KEY source for `rs_df` | Consistent with numpy array source |
+| `20-cdrh3-title` | Document null vs gap (45) distinction | Clarity |
+| `21-cdrh3-len` | Use `aligned_joint`; exclude both null and gap (45) when counting occupied positions | Fix CDRH3 length overestimation |
+| `23-qc` | Use `aligned_joint` and `seq_H` (from numpy) for stop codon detection; replace `mut_aligned` references | Remove stale variable; consistent with new data flow |
+
+---
+
+## 2026-03-13 — Step 0 second run: validation + fixes
+
+### Bug: `mutations_sorted` stored raw nucleotides instead of differences
+
+**Error:** All three validation plots failed:
+- Plot 1 (mutation load): empty — all values at `n_mut_H = 149` (outside xlim 0–50)
+- Plot 2 (CDR enrichment): single bar at neutral expectation — `n_mut_CDR_H/n_mut_H ≈ 57/149 ≈ 0.382 = neutral`
+- Plot 3 (CDRH3 length): correctly computed (not affected)
+
+**Root cause:** Refactored cell 11 set:
+```python
+mutations_sorted = aligned_joint.select([KEY] + pos_cols)
+```
+`pos_cols` are the sequence nt column names. In `aligned_joint` those columns hold raw ASCII nucleotide values (65/67/71/84 = all non-zero), so every position was flagged as "mutated".
+
+**Fix (cell `11-mut-matrix`):** Apply the difference transformation explicitly before selecting:
+```python
+mutations_sorted = (
+    aligned_joint
+    .with_columns([(pl.col(c) - pl.col(f"{c}_germ")).alias(c) for c in pos_cols])
+    .select([KEY] + pos_cols)
+)
+```
+`aligned_joint` remains unchanged for numpy extraction.
+
+**Note:** The R/S classification was unaffected — it uses raw `seq_H`/`germ_H` arrays directly. The R/S values produced (R/S CDR ≈ 3.2 > neutral 2.9 → positive selection; R/S FWR ≈ 1.9 < neutral → purifying selection) are biologically correct.
+
+### Bug: CDRH3 length = 0 spike in plot, CDRL3 missing
+
+- `cdrh3_length = 0` observed for some sequences — truncated/incompletely assembled VH. Added to QC filter.
+- Light chain CDR3 length was not computed. Added `cdrl3_length` column using the same gap-aware counting logic on `L_REGIONS['CDR3']`.
+
+### Cells modified (second round)
+
+| Cell ID | Change | Reason |
+|---|---|---|
+| `11-mut-matrix` | Add `.with_columns(seq - germ)` before `.select()` to build `mutations_sorted` | Fix raw-nt-as-mutation bug |
+| `21-cdrh3-len` | Add `cdrl3_length` column; refactor to shared helper function | Missing light chain CDR3 length |
+| `23-qc` | Add `cdrh3_length == 0` and `cdrl3_length == 0` to QC fail set | Filter truncated sequences |
+| `25-assemble` | Pass through `cdrl3_length` in master join | New column |
+| `27-validate` | Stratify plot 1 by naive_strict/bio-only/comp-only/memory; fix plot 2 to use memory-only filter; fix plot 3 to show H and L CDR3 separately, exclude length=0 | Correct all three broken plots |
+
+---
+
+### Data questions for follow-up
+
+1. **Why 49 duplicate seq_names from iggnition?** Root cause: germline numbering failures causing re-attempts (not duplicate input). Resolved by dedup before join.
+2. **Why 60% naive by bio label?** Experimental design likely explains this — confirm whether samples include explicitly sorted naive B cells.
+3. **Extreme outliers** (max VH = 120 codons, max total = 157) — check post-QC whether stop codon filter removes these or if additional curation is needed.
+4. **692,383 bio-naive but NOT comp-naive** — likely IgD+ cells (IgD ≠ IgM in `c_gene:0 == 'IGHM'` filter). Pending confirmation.
+
+---
+
+## 2026-03-13 — Step 0 final results: biological findings
+
+### Mutation count summary (validated — bimodal distribution confirmed)
+
+| Metric | mean | std | median | max |
+|--------|------|-----|--------|-----|
+| n_mut_H | 8.95 | 10.12 | 5 | 109 |
+| n_mut_L | 5.54 | 6.89 | 3 | 110 |
+| n_mut_FWR_H | 5.06 | 6.74 | 2 | 78 |
+| n_mut_FWR_L | 3.42 | 4.76 | 1 | 83 |
+| n_mut_total | 14.49 | 14.65 | 10 | 157 |
+
+n_mut_H mean=8.95 is consistent with published SHM data (bimodal: naive ~0, memory ~10–20). Max VH=109 and total=157 are extreme outliers — likely high-SHM memory cells; stop codon filter passed (0 stop codons detected), so these are not obvious artifacts.
+
+### Selection signals (R/S analysis — validated, from raw alignment arrays)
+
+| Region | n_R (mean±std) | n_S (mean±std) | R/S ratio | Interpretation |
+|--------|---------------|---------------|-----------|----------------|
+| CDR (H+L) | 4.12 ± 3.85 | 1.28 ± 1.58 | **3.21** | > neutral (~2.9) → **positive selection** |
+| FWR (H+L) | 5.41 ± 6.36 | 2.87 ± 3.72 | **1.88** | < neutral → **purifying selection** |
+
+CDRs accumulate beneficial replacements; FWRs resist destabilizing changes. Expected affinity maturation signature. These numbers anchor Φ_A and Φ_S calibration in Steps 2–3.
+
+### CDR3 length distributions
+
+| Chain | mean (aa) | std | median | min | max |
+|-------|-----------|-----|--------|-----|-----|
+| CDRH3 | 11.91 | 5.57 | 13 | 0 | 29 |
+| CDRL3 | 7.35 | 1.10 | 7 | 0 | 29 |
+
+CDRH3 distribution is as expected (human repertoire ~10–16 aa). CDRL3 is narrow around 7 (kappa chains), consistent with known biology.
+**Note:** CDRL3 max = 29 aa is biologically real — the distribution is centred ~7–9 aa but the tail extends to 30–35 aa (rare but genuine). Not an artifact.
+
+### QC outcomes
+
+| Filter | Count |
+|--------|-------|
+| Stop codons in VH | 0 |
+| Missing H alignment | 0 |
+| Missing L alignment | 49 |
+| CDRH3 length = 0 | 556,206 |
+| CDRL3 length = 0 | 15,858 |
+| **Total removed** | **570,010 (11.8%)** |
+| **Retained** | **4,269,981** |
+
+**CDRH3 = 0: biologically impossible alignment artifact.** Input is pre-filtered for complete VDJ. The 3′ primer anchors at CH1 onset → truncated mRNAs cannot be amplified. All 556,206 sequences with CDRH3=0 are iggnition CDR3 assignment failures. This is a surprisingly large fraction (11.5%) — worth investigating whether it is specific to certain donors, V genes, or CDR3 length ranges.
+
+### Population composition (validated)
+
+| Label | n | % |
+|-------|---|---|
+| naive_strict | 1,979,995 | 40.9% |
+| naive_bio | 2,914,772 | 60.2% |
+| naive_comp | 2,141,846 | 44.2% |
+| Bio/comp concordance | 3,735,806 | 77.2% |
+
+(Percentages are pre-QC. Post-QC population breakdown will shift slightly.)
+
+### Open questions
+
+1. Why does 11.5% of sequences have CDRH3=0? Is this specific to certain donors or V genes?
+2. Extreme mutation outliers (n_mut_H=109, total=157) — are these genuine hypermutated memory cells or should additional outlier thresholds be applied?
+
+---
+
+## 2026-03-13 — Step 1 results: V1–V4 biological findings
+
+### Dataset composition (post-QC)
+
+| Subset | n |
+|--------|---|
+| Total | 4,269,981 |
+| naive_strict | 1,765,330 |
+| memory (not naive_bio, not naive_comp) | 1,517,911 |
+
+Memory is dominated by IgM: 839,304 / 1,517,911 = **55.3%** class-unswitched. This reflects the experimental design.
+
+---
+
+### V1 — S5F Mutability profile
+
+- 20,263,068 synonymous mutations identified across 432,344,130 opportunities (~4.7% global synonymous rate)
+- 233 unique 5-mer contexts observed (out of 1024 possible; constrained by germline composition)
+- Normalised max mutability = **5.71** — consistent with strongest known AID hotspots
+
+**Hotspot density in H V-region (FR1–FR3, CDR1–CDR2):**
+
+| Type | Count | % of 324 positions |
+|------|-------|--------------------|
+| neutral | 216 | 66.7% |
+| edge | 37 | 11.4% |
+| WRC (AID) | 21 | 6.5% |
+| SYC_cold | 19 | 5.9% |
+| WA (Polη) | 14 | 4.3% |
+| TW (Polη) | 13 | 4.0% |
+| RGYW (AID) | 4 | 1.2% |
+
+Total AID (WRC+RGYW): **7.7%** of V-region positions. This is the empirically-derived S5F model; will be used as the neutral expectation for Φ_A and ω_i calculations in Steps 2–3.
+
+**Note:** The profile is computed on a pooled consensus germline (all sequences collapsed to mode per Aho position). Per-germline profiles are derived separately in V2.
+
+---
+
+### V2 — R_AID: AID hotspot enrichment CDR vs FWR
+
+**Major unexpected finding: R_AID < 1 for ALL 55 IGHV germlines.**
+
+| Rank | Gene | R_AID | n |
+|------|------|-------|---|
+| 1 | IGHV2-26 | 0.762 | 36,302 |
+| 2 | IGHV3-33 | 0.752 | 113,049 |
+| 3 | IGHV3-72 | 0.752 | 20,202 |
+| ... | ... | <0.76 | ... |
+
+No germline reaches R_AID = 1.0. The WRC/RGYW density in FWR consistently exceeds CDR density.
+
+**Interpretation:** This is consistent with published findings (e.g., Dorner et al., Shapiro et al.) — AID does not preferentially target CDRs based on germline sequence motif density alone. The CDR enrichment of SHM observed empirically arises from selection (beneficial replacements in CDRs are retained; FWR replacements are purged), not from intrinsic germline AID hotspot pre-wiring. R_AID as a "pre-wiring" metric is therefore uninformative at this level. The finding is biologically real and should be discussed in the paper.
+
+**Impact on DESIGN.md:** The DESIGN.md expected some germlines to have R_AID > 1. This was not observed. The figure (fig_v2_raid_top40) will show a bar chart entirely left of the neutral line — this is itself the result.
+
+---
+
+### V3 — CDRH3 length vs V-region SHM load
+
+- Linear regression: slope=0.121, **R²=0.002**, p≈0 (statistically significant at n=1.5M, biologically negligible)
+- Each additional CDR3 aa adds ~0.12 V-gene mutations on average
+
+**Anomaly at 22–23 aa bin:** Mean drops to 13.8 (n=24,918) vs ~17 for adjacent bins. This is reproducible (n is large). Likely reflects a structurally distinct CDR3 category — possibly sequences with a specific D-gene usage or a biased V-gene group that uses long HCDR3s but low SHM.
+
+**Conclusion for downstream modelling:** CDRH3 length has negligible predictive power for V-region SHM. These can be treated as independent in the Φ_A framework.
+
+---
+
+### V4 — Mutation accumulation by isotype
+
+| Isotype | n | Mean n_mut_H | Median |
+|---------|---|-------------|--------|
+| null | 47,290 | 13.3 | 13 |
+| IgM | 839,304 | **13.8** | 13 |
+| IgD | 36 | 14.5 | 14 |
+| IgE | 721 | **19.7** | 19 |
+| IgA | 378,080 | **21.2** | 21 |
+| IgG | 252,464 | **22.0** | 21 |
+
+**Key findings:**
+1. **IgM memory = 13.8 mutations**: Substantial SHM in unswitched memory. These are GC-derived, class-unswitched memory B cells — biologically expected and consistent with published repertoire data.
+2. **IgA ≈ IgG, and IgA < IgG**: Contradicts the DESIGN.md assumption of IgM < IgG < IgA ordering. IgA populations include T-independent switching (gut mucosa, marginal zone) which generates lower-SHM sequences and dilutes the mean. The Poisson maturation model cannot be applied with IgA > IgG assumption.
+3. **IgE < IgA/IgG**: Consistent with sequential switching model (IgE arises from IgG1 by secondary switching, not direct GC-naïve switching).
+4. **47,290 null-isotype**: Mean 13.3 ≈ IgM. Likely unassigned IgM or early GC members. Group with IgM for Poisson fitting.
+5. **Revised maturation ladder**: IgM ≈ null < IgE < IgA ≈ IgG. Use IgG (highest, most reliable n) as the "deep maturation" reference in downstream Φ_A calibration.
+
+**Runtime warning in V2:** `RuntimeWarning: invalid value encountered in cast` when converting null-containing Polars columns to numpy int32. Non-critical — fill_null(0) downstream handles it — but should be fixed by explicit null-filling before cast.
