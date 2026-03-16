@@ -4,6 +4,66 @@
 
 ---
 
+## 2026-03-16 — Step 6 (Pareto fronts): first run, biological insights
+
+### P1: Global Pareto front (stratified sample)
+
+- 84 / 196,195 sequences on the Pareto front (0.04%)
+- Extreme sparsity reflects near-orthogonality of the three objectives at population scale: few sequences simultaneously minimize Φ_A (affinity), Φ_S (structural), and Φ_R (reactivity)
+- This is consistent with the trade-off hypothesis: high affinity tends to require accepting higher structural or reactivity costs
+
+### P3: Per-isotype Pareto hypervolumes
+
+| Isotype | 2D Hypervolume (Φ_S–Φ_A projection) |
+|---------|--------------------------------------|
+| IgA     | 0.785                                |
+| IgG     | 0.510                                |
+| IgE     | 0.368                                |
+| IgM     | 0.312                                |
+
+**Interpretation:** IgA unexpectedly shows the largest hypervolume despite not being the most affinity-selected isotype. Mean Φ_A on the Pareto front confirms IgG (0.150) is more affinity-driven than IgA (0.162). IgA's broader front reflects its mixed T-dependent/T-independent switching origins: T-ind IgA matures less deeply, pulling some front members toward higher Φ_A and Φ_S, thereby spreading the achievable frontier in both dimensions. This is a consequence of population-level diversity in switching context, not deeper affinity maturation.
+
+IgM's low hypervolume is consistent with its mainly naive/early memory origin; most IgM sequences cluster near the reference point (high costs, far from the Pareto optimum).
+
+### P4: Per-donor hypervolumes
+
+- HV range: [0.36, 0.78]; mean = 0.540; std = 0.135
+- **Methodological caveat:** HV is inversely correlated with donor n (small donors show inflated HV due to sampling variance — a small sample tends to produce an artificially spread Pareto front)
+- Biological variation across donors remains to be characterized once sample-size effects are controlled
+
+---
+
+## 2026-03-16 — Step 5b bug: singleton lineages in memory-only subset
+
+### Finding
+
+Running Step 5b (endpoint selection) on the memory subset yielded ~1,415,760 "endpoints" — nearly identical to the full dataset (~1,460,550 sequences). Results were indistinguishable from Step 5: λ_S≈0.0026, λ_R=0, R²≈0.0004.
+
+**Root cause:** The `lineage` column was assigned on the full 4.27M dataset (naive + memory combined). In the memory-only subset, most sequences' clonal relatives are in the naive compartment or were QC-filtered. This makes 98.9% of memory lineages apparent singletons (lineage_size = 1 in the memory-only data). Selecting one endpoint per singleton is trivially the sequence itself — identical to no selection at all.
+
+```
+Lineage size distribution (memory-only subset):
+  singletons (size=1): 1,400,853  (98.9%)
+  multi-member (≥2):      14,907   (1.1%)
+```
+
+**Fix (cell 05 of 05b_lagrange.ipynb):**
+```python
+# Filter to multi-member lineages only — singletons are not meaningful endpoints
+endpoints = all_endpoints.filter(pl.col('lineage_size') >= 2)
+# n = ~14,907 (vs ~1,415,760 before fix)
+```
+
+**Threshold adjustments (cells 11 and 14):**
+- `MIN_GERM_EP`: 100 → 20 (endpoint set is ~100× smaller; regression needs n≥3)
+- `MIN_DONOR_EP`: 500 → 50 (some donors may have as few as ~50 multi-member endpoints)
+
+**Impact on conclusions:** Step 5b must be re-run on HPC. Previous Step 5b results were essentially duplicates of Step 5 and should be disregarded. Results from the corrected run (~14,907 endpoints) are expected to differ and will be logged after re-run.
+
+**Note for Step 7 (dynamics):** The same singleton problem affects any lineage-trajectory analysis. Step 7 should be designed to operate on multi-member lineages only. The ~14,907 multi-member lineages represent the full usable dataset for trajectory-based analyses.
+
+---
+
 ## 2026-03-16 — Design decision: 06_pareto not adapted pending 05b results
 
 **Question:** Should 06_pareto be updated to use lineage endpoints given the 05b addition?
