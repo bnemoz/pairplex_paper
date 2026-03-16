@@ -4,6 +4,111 @@
 
 ---
 
+## 2026-03-16 — Design decision: 06_pareto not adapted pending 05b results
+
+**Question:** Should 06_pareto be updated to use lineage endpoints given the 05b addition?
+
+**Decision:** No — run 05b and 06 as-is; revisit after seeing 05b results.
+
+**Rationale:**
+- 06_pareto does not depend on λ values; it maps (Φ_S, Φ_A, Φ_R) objective space directly. The two analyses answer independent questions:
+  - Pareto: what is the achievable frontier across all memory sequences? (all sequences are valid data points)
+  - Lagrange: what are the constraint exchange rates at the optimum? (endpoints are better data points for this specific question)
+- The full-population Pareto front is biologically meaningful as-is.
+- An endpoint-restricted Pareto front is interesting but premature: we don't yet know stratum sizes per germline/isotype in the endpoint subset; noisy fronts in small strata would be problematic.
+
+**Planned follow-up (conditional on 05b results):** If 05b shows substantially higher λ values (confirming stage-mixing confound), add a **P5 — Endpoint Pareto front** section at the end of 06_pareto, loading `lineage_endpoints.parquet` and repeating P1–P3 on that subset. The full-population vs endpoint comparison then becomes a publication-quality result.
+
+---
+
+## 2026-03-16 — Step 5b designed: lineage endpoint approach for Lagrange estimation
+
+### Design decision: endpoint-based Lagrange analysis
+
+**Motivation:** The cross-sectional KKT regression in Step 5 mixes sequences at all maturation stages. The KKT stationarity condition holds at the *optimum*, not at intermediate states. Averaging over early and late sequences washes out the signal.
+
+**Approach:** For each clonal lineage, select one "endpoint" representative — the sequence with the most VH amino acid replacement mutations (`n_R_CDR_H + n_R_FWR_H`). Silent mutations are excluded from the criterion because the Lagrangian model operates in functional (AA) space; silent changes don't move the sequence through objective space.
+
+**Implementation:** `05b_lagrange.ipynb` — mirrors Step 5 L1/L2/L3 on the endpoint subset.
+Thresholds: ≥100 endpoint lineages per germline (vs ≥1000 sequences in Step 5); ≥500 per donor (vs ≥5000).
+
+**Expected outcome:** Higher λ values and R² than Step 5 if the stage-mixing confound is real. Germlines with λ_R > 0 only at the endpoint level represent cases where the reactivity constraint becomes active only after deep maturation.
+
+**DESIGN.md:** Updated with Step 5b section (endpoint selection rationale, selection criterion, notebooks L1b–L3b).
+
+---
+
+## 2026-03-16 — Step 5 (Lagrange multipliers): first run, bug fix, biological insights
+
+### Bug: `partition_by(as_dict=True)` returns tuple keys, not plain strings
+
+**Error (cell 11, L2 regression):**
+```
+InvalidOperationError: cannot cast List type (inner: 'String', to: 'String')
+```
+
+**Root cause:**
+`data.partition_by('v_gene:0', as_dict=True)` returns a dict whose keys are tuples (or lists in some Polars versions), one element per partition column. When the raw key was stored directly in the results dict (`'v_gene': vgene`), Polars inferred the column type as `List[String]` instead of `String`, causing `.filter(pl.col('v_gene') == 'IGHV4-34')` to fail.
+
+The same bug affected cell 14 (L3 regression) with the `donor` column.
+
+**Fix (cells 11 and 14):**
+```python
+# Before:
+for vgene, subdf in data.partition_by('v_gene:0', as_dict=True).items():
+    germline_results.append({'v_gene': vgene, ...})
+
+# After:
+for vgene_key, subdf in data.partition_by('v_gene:0', as_dict=True).items():
+    vgene = vgene_key[0] if isinstance(vgene_key, (list, tuple)) else str(vgene_key)
+    germline_results.append({'v_gene': vgene, ...})
+```
+
+**Applies to:** Any `partition_by(..., as_dict=True)` loop where the key is used as a scalar column value. Always extract with `key[0]` or use a guard.
+
+**Additional fix:** Cell 11 was missing the CSV save alongside the parquet (FAIR policy). Added `germline_df.write_csv(TABLES / "lambda_by_germline.csv")`.
+
+**Cells that ran before crash:** L1 (global regression) fully completed. L2 regression ran but crashed during the diagnostic filter prints after saving the (malformed) parquet. L3 and the summary cell did not run.
+
+---
+
+### Step 5 — Biological findings
+
+#### L1: Global Lagrange multipliers (NNLS + Huber, germline-demeaned)
+
+| Estimator | λ_S | λ_R | R² |
+|-----------|-----|-----|----|
+| NNLS | 0.0027 [CI: 0.0025–0.0029] | 0.0000 | 0.0004 |
+| Huber | 0.0000 | 0.0000 | — |
+
+**Key observation:** Both λ values are near zero; R² = 0.0004. The cross-sectional KKT regression has essentially no explanatory power.
+
+**Biological interpretation:**
+This is expected and informative:
+- The cross-sectional design mixes sequences at different maturation stages, from different lineages and germlines. The population average washes out within-lineage trade-offs that the Lagrangian predicts.
+- λ_R = 0: the autoreactivity constraint is **not globally binding**. B cell checkpoint removes autoreactive cells before they reach memory; the survivors are not at the constraint boundary. The constraint acts as a selection filter, not a continuous cost.
+- λ_S = 0.0027 (tiny but CI excludes 0): structural integrity has a marginal positive cost in affinity space, consistent with the biology (FWR mutations are tolerated but not beneficial for affinity).
+- **Conclusion:** Cross-sectional estimation of λ is underpowered. The within-lineage Hamiltonian analysis (Step 7) is the appropriate test. The gradient of the potential along lineage trajectories is what the Lagrangian predicts, not the population-level regression.
+
+#### L2: Per-germline Lagrange multipliers
+
+Results before the crash showed 46 germlines with ≥1000 sequences. Notable findings:
+
+| v_gene | λ_S | λ_R | n | Biology |
+|--------|-----|-----|---|---------|
+| IGHV1-2 | 0.0106 | 0.1830 | 79,141 | VRC01-class bnAb germline; only germline with substantial λ_R |
+| IGHV3-64 | 0.0236 | 0.000 | 2,117 | Highest λ_S; small stratum |
+| IGHV3-74 | 0.0164 | 0.000 | 104,696 | High λ_S |
+| Most germlines | ~0.003–0.02 | 0.000 | varied | λ_R = 0 |
+
+**Key finding — IGHV1-2 λ_R = 0.183:** This is the VRC01-class broadly neutralising antibody germline (targets the CD4-binding site of HIV gp120). IGHV1-2 is known to require a deletion in CDRL2 (5-aa insertion/deletion) and extensive CDRH3 maturation that borders on autoreactive chemistry. The elevated λ_R reflects strong reactivity checkpoint pressure during bnAb development — this germline operates closest to the autoreactivity boundary.
+
+**Key finding — IGHV4-34 λ_R ≈ 0:** Despite being the prototypical autoreactive germline (anti-i/I carbohydrate via framework LCDR1-like motif), its λ_R is not elevated. This is consistent with Φ_R being CDRH3-based: IGHV4-34 autoreactivity is encoded in the VH framework, not in CDR3 chemistry. Φ_R as currently defined does not capture framework-encoded autoreactivity.
+
+**Methodological note:** λ_R = 0 for most germlines (NNLS lower bound). This means the reactivity constraint, as captured by CDRH3 features (H, Q, L, Y), is inactive for the vast majority of germlines. The constraint is specific to germlines that evolve toward autoreactivity-like CDRH3 features (e.g., IGHV1-2 bnAbs).
+
+---
+
 ## 2026-03-13 — Step 0 notebook: first run insights + bug fixes
 
 ### Data insights from first run

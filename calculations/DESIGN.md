@@ -409,7 +409,8 @@ Compute Φ_A(x) = -log(delta_RS(x)) for each sequence (negative because high del
 
 **Output:** `results/tables/lambda_by_germline.csv`
 **Figure:** Scatter plot of λ_S vs λ_R per germline, with gene labels. Look for systematic patterns:
-- Are IGHV1-69 and IGHV1-2 (bnAb genes) in a distinct cluster?
+- Which germlines carry strong structural constraints (high λ_S)?
+- Which germlines show active reactivity constraints (high λ_R)?
 - Does IGHV4-34 have anomalously high λ_R?
 
 ### 5.3 Per-Donor λ (L3)
@@ -420,6 +421,67 @@ Compute Φ_A(x) = -log(delta_RS(x)) for each sequence (negative because high del
 
 **Output:** `results/tables/lambda_by_donor.csv`
 **Figure:** Box plots of λ_S and λ_R distributions across donors. Test for inter-individual variation.
+
+---
+
+## Step 5b: Lagrange Multiplier Estimation on Lineage Endpoints (Calculations L1b–L3b)
+
+**File:** `src/lagrange_endpoints.py`
+**Notebook:** `05b_lagrange.ipynb`
+**Rationale:** The cross-sectional regression in Step 5 mixes sequences at all stages of maturation (early GC responses, recent switchers, long-lived plasma cells). This averaging washes out the KKT signal, which is a property of the **optimum**, not of intermediate states. Focusing on lineage endpoints — the most functionally matured representative per clonal family — reduces the stage-mixing confound and brings the dataset closer to the constraint boundary where the KKT condition holds.
+
+### 5b.0 Endpoint Selection
+
+**What:** For each clonal lineage, select a single "endpoint" representative — the most somatically hypermutated member.
+
+**Selection criterion:** Total VH amino acid replacement mutations = `n_R_CDR_H + n_R_FWR_H`.
+
+**Rationale for replacement mutations over total codon mutations:**
+The Lagrangian model operates in functional (amino acid) space: all three objectives (Φ_A, Φ_S, Φ_R) are AA-level quantities. Silent mutations contribute to evolutionary distance but do not move the sequence through objective space. Replacement count is therefore the most direct measure of functional maturation depth. Use `n_mut_H` (total VH codon mutations) as a tie-breaker for equal replacement counts.
+
+**Tie-breaking:** Where multiple sequences share the same `n_R_H` value within a lineage, keep the one with the highest `n_mut_H`. Further ties are broken arbitrarily.
+
+**Singletons:** Lineages with a single member are valid — the sole sequence is by definition the endpoint. Include them; they are not preferentially removed.
+
+**Filter:** Remove lineages where `lineage` is null (sequences without clonal family assignment). These cannot be assigned a meaningful endpoint context.
+
+**How:**
+```python
+endpoints = (
+    memory_df
+    .filter(pl.col('lineage').is_not_null())
+    .with_columns(
+        (pl.col('n_R_CDR_H') + pl.col('n_R_FWR_H')).alias('n_R_H')
+    )
+    .sort(['n_R_H', 'n_mut_H'], descending=True)
+    .group_by('lineage')
+    .first()   # top-ranked after sort = most mutated
+)
+```
+
+**Output:** `results/tables/lineage_endpoints.parquet` — one row per lineage, same columns as master + `n_R_H`.
+
+### 5b.1 Global λ on Endpoints (L1b)
+
+Same procedure as L1: within-germline demeaning → NNLS + Huber regression → bootstrap CI.
+Expected improvement: λ values closer to the theoretical KKT prediction; R² higher than the ~0.0004 from Step 5.
+
+**Output:** `results/tables/lambda_global_endpoints.csv`
+**Figure:** Same three-panel layout as Step 5 L1 (`fig_l1b_lambda_global_endpoints.png`), plus a side-by-side comparison panel showing λ from Step 5 (all sequences) vs Step 5b (endpoints only).
+
+### 5b.2 Per-Germline λ on Endpoints (L2b)
+
+Same procedure as L2, restricted to germlines with ≥ 100 lineage endpoints (lower threshold than Step 5 because the endpoint subset is smaller).
+
+**Output:** `results/tables/lambda_by_germline_endpoints.csv`
+**Figure:** `fig_l2b_lambda_by_germline_endpoints.png`
+
+### 5b.3 Per-Donor λ on Endpoints (L3b)
+
+Same procedure as L3, restricted to donors with ≥ 500 lineage endpoints.
+
+**Output:** `results/tables/lambda_by_donor_endpoints.csv`
+**Figure:** `fig_l3b_lambda_by_donor_endpoints.png`
 
 ---
 
@@ -624,8 +686,9 @@ Step 1: mutability.py     → V_mut profiles (V1-V4)
 Step 2: phi_structure.py  → Φ_S calibration (S1-S3)
 Step 3: phi_affinity.py   → Φ_A calibration (A1-A3)
 Step 4: phi_reactivity.py → Φ_R calibration (R1-R2)
-Step 5: lagrange.py       → λ estimation (L1-L3)        [depends on Steps 2-4]
-Step 6: pareto.py         → Pareto fronts (P1-P4)       [depends on Steps 2-4]
+Step 5: lagrange.py           → λ estimation (L1-L3)           [depends on Steps 2-4]
+Step 5b: lagrange_endpoints.py → λ on lineage endpoints (L1b-L3b) [depends on Steps 2-4; endpoints selected from master]
+Step 6: pareto.py             → Pareto fronts (P1-P4)           [depends on Steps 2-4]
 Step 7: dynamics.py       → Hamiltonian analysis (D1-D4) [depends on Steps 1-6]
 Step 8: biomarkers.py     → Synthesis (α-β profiles)     [depends on Steps 5-6]
 ```
