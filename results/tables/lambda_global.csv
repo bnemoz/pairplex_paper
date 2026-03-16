@@ -1,0 +1,5 @@
+method,param,estimate,ci_lo_95,ci_hi_95
+NNLS,lambda_S,0.0026763673135881487,0.0024632088974691183,0.002911901323889876
+NNLS,lambda_R,0.0,0.0,0.0
+Huber,lambda_S,0.0,,
+Huber,lambda_R,0.0,,
