@@ -33,6 +33,87 @@ IgM's low hypervolume is consistent with its mainly naive/early memory origin; m
 
 ---
 
+## 2026-03-16 — Step 7 (Hamiltonian dynamics): notebook coded
+
+### Design decisions
+
+**Pseudotime approximation:** No phylogenetic tree-building (IgPhyML, dnapars) — instead, order lineage members by `n_mut_H` within each lineage. This is an approximation (ignores branching, ties at same depth), but sufficient for all four D1–D4 tests.
+
+**Minimum lineage size:** `MIN_LINEAGE_SIZE = 5` for D1–D4 trajectory analysis; `MIN_EDGES_D3 = 4` for per-lineage KKT regression.
+
+**D3 design:** Two complementary approaches:
+1. **Per-lineage NNLS** — fit λ separately per lineage with ≥4 edges. Gives distribution of per-lineage λ_S, λ_R.
+2. **Pooled within-lineage demeaning** — subtract per-lineage mean ΔΦ, then pool all edges. This is the correct within-lineage analogue of Step 5's within-germline demeaning.
+
+**Expected results:**
+- D2: fraction Φ_A↓ > 0.5 (affinity deficit decreasing along trajectories)
+- D3 pooled R² > 0.0004 (cross-sectional) — the within-lineage signal should be detectable
+- D4 T_eff decreases with depth (selection tightens near constraint boundary)
+
+### Outputs
+
+- `lineage_trajectories.parquet`, `lineage_edges.parquet`
+- `lineage_velocities.parquet`
+- `kkt_within_lineage.csv`, `kkt_within_lineage_pooled.csv`
+- `effective_temperature.csv`
+- Figures: `fig_d1_trajectories.png`, `fig_d2_velocity.png`, `fig_d3_kkt_within_lineage.png`, `fig_d4_effective_temperature.png`
+
+---
+
+## 2026-03-16 — Step 5b (corrected): results and biological interpretation
+
+### Dataset after fix
+
+- 14,907 multi-member lineage endpoints (vs 1,415,760 before fix)
+- Endpoint mean n_R_H = 13.80 vs full-memory mean = 12.27 (+12.5%) — endpoints are indeed more mutated ✓
+- Isotype composition: IgM 54.5%, IgA 26.4%, IgG 16.0% — IgM dominant (see below)
+
+### L1b results (global, n=14,907)
+
+| Estimator | λ_S | λ_R | R² |
+|-----------|-----|-----|----|
+| NNLS | 0.0000 | 0.0000 | 0.0000 |
+| Huber | 0.0000 | 0.0000 | — |
+
+**Finding:** The global endpoint regression is *worse* than Step 5, not better.
+**Interpretation:** Within-germline demeaning removes the germline mean. With only ~300 endpoints per germline (14,907 / 50 germlines), there is insufficient within-germline spread to recover the KKT gradient. Both steps 5 and 5b are cross-sectional: they compare endpoints from *different lineages* at different objective-space positions. The KKT condition requires comparing *the same lineage before and after* a mutation — i.e., within-lineage analysis. That is Step 7.
+
+### L2b results (per-germline, n=50 germlines ≥20 endpoints)
+
+19 germlines with active λ_R (vs 1 in Step 5). Much richer reactivity constraint landscape at endpoints.
+
+| v_gene | λ_R | n | Biology |
+|--------|-----|---|---------|
+| IGHV4-38-2 | 0.316 | 215 | Highest λ_R |
+| IGHV2-70D  | 0.282 | 141 | High λ_R |
+| IGHV5-10-1 | 0.221 | 242 | |
+| IGHV4-31   | 0.194 | 352 | |
+| IGHV3-21   | 0.188 | 449 | Known polyreactivity association |
+
+**IGHV1-2 dropped out** of the top λ_R list at the endpoint level — suggesting its reactivity constraint is active throughout maturation (not just at the endpoint), explaining why averaging over all cross-sectional sequences in Step 5 revealed it.
+
+**IGHV3-66 and IGHV6-1** have the highest λ_S (0.029, 0.028) — structural constraint is tightest at endpoints for these germlines.
+
+### L3b results (per-donor, n=11 ≥50 endpoints)
+
+- Donor 10 persists: λ_R=0.245, R²=0.0056 (strongest reactivity-constrained donor)
+- Donor 09 newly active: λ_R=0.037 (not seen in Step 5)
+- 9/11 donors show λ_R=0 even at endpoint level
+
+### IgM dominance in multi-member lineages
+
+54.5% of multi-member endpoints are IgM. IgM memory B cells undergo clonal expansion without class switching. Class-switched cells (IgG, IgA) tend to differentiate into plasmablasts, depleting their memory pool. This makes biological sense but means the endpoint analysis is enriched for IgM biology and may underweight IgG/IgA maturation trajectories.
+
+### Key conclusion: cross-sectional Lagrange is underpowered at any level
+
+Both Steps 5 and 5b confirm the same pattern: R² is effectively 0 for the global regression. The KKT approach requires within-lineage mutation-by-mutation analysis (Step 7). The per-germline (L2b) results are more informative and show the endpoint-level constraint landscape, but the full test is Step 7.
+
+### Bug fixed: legend label in cell 09
+
+The Step 5 bar in the comparison plot was labeled with `n=len(Y_ep)=14,907` instead of the actual Step 5 n. Fixed to load n from `lambda_global.csv`.
+
+---
+
 ## 2026-03-16 — Step 5b bug: singleton lineages in memory-only subset
 
 ### Finding
