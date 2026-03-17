@@ -1257,3 +1257,86 @@ For each v_gene, compute:
 - `results/tables/lambda_global_endpoints_v2.csv`
 - `results/tables/lambda_by_germline_endpoints_v2.csv`
 - Figures: fig_l1c_global.png, fig_l2c_per_germline.png, fig_l3c_comparison.png
+
+---
+
+## 2026-03-17 — Step 5c: bug fixes (v1 → v2)
+
+### Bugs found and fixed
+
+**Bug 1 — `n_R_H` ColumnNotFoundError (cell 04-load-data)**
+
+`affinity_proxy.parquet` does not contain a pre-computed `n_R_H` column. The code attempted to `.select()` this column before computing it, causing an immediate crash. Fix: remove `n_R_H` from the `.select()` call; compute it in the subsequent `.with_columns()` as `n_R_CDR_H + n_R_FWR_H`.
+
+**Bug 2 — `naive_bio`/`naive_comp` ColumnNotFoundError (cell 04-load-data)**
+
+The naive/memory compartment flags (`naive_bio`, `naive_comp`) are only in the Step 0 master table and were not propagated to `affinity_proxy.parquet`. Available columns: `seq_name`, `v_gene:0`, `c_gene:0`, `isotype_class`, `n_R_CDR_H`, `n_S_CDR_H`, `n_R_FWR_H`, `n_S_FWR_H`, `n_R_CDR_L`, `n_S_CDR_L`, `n_mut_H`, `n_mut_L`, `cdrh3_length`, `donor`, `lineage`, `junction_aa:0`, `RS_obs_VH`, `has_cdr_mut_H`, `delta_RS_H`, `phi_A`.
+
+**Fix:** Use `n_mut_H == 0` as a germline-proximal proxy. Sequences with zero VH mutations have not undergone SHM and represent the closest available approximation of germline Φ_R. This is biologically justified and consistent with the model.
+
+**Bug 3 — `from scipy.stats import huber` (cell 01-imports)**
+
+`scipy.stats.huber` is a function for computing the Huber location estimator, not a regression. It was already commented out in v1. The Huber regression correctly uses `statsmodels.api.RLM(..., M=sm.robust.norms.HuberT()).fit()`, wrapped in try/except. No code change needed; confirmed commented out.
+
+### Impact
+All downstream cells (L0c through L4c) did not execute due to the crash at cell 04. No output files were created for Step 5c in v1. Fixed v2 ready to re-run.
+
+---
+
+## 2026-03-17 — Step 8 (Biomarkers): first run results
+
+### Dataset
+- 1,460,550 sequences with valid strategy vectors (α + β + γ = 1.000)
+- 53 germlines with n ≥ 100
+
+### B1 — Strategy simplex (population overview)
+
+| Component | Mean | Interpretation |
+|-----------|------|----------------|
+| α (Structural) | 0.936 | Φ_S dominates the objective sum |
+| β (Affinity) | 0.049 | Φ_A is a minority contributor |
+| γ (Reactivity) | 0.015 | Φ_R is the smallest component |
+
+**Critical caveat — depth confound:** α dominates because Φ_S is a cumulative sum scaling linearly with mutation depth (n_mut_H × position weights), while Φ_A is a ratio (R/S, bounded) and Φ_R is a probability-like score (0–1). Deeper sequences (more mutations) will always have higher α regardless of their biological "strategy." The strategy vector as defined measures relative objective contributions but is confounded with maturation depth.
+
+### B3 — Per-isotype strategy profiles (Kruskal-Wallis)
+
+All three components significantly differ across isotypes (p≈0 for α, β, γ).
+
+| Isotype | n | Mean α | Mean β | Mean γ |
+|---------|---|--------|--------|--------|
+| IgM | 807,553 | 0.927 | 0.058 | 0.015 |
+| IgA | 363,824 | 0.949 | 0.037 | 0.014 |
+| IgG | 242,978 | 0.949 | 0.034 | 0.017 |
+| IgE | 696 | 0.942 | 0.040 | 0.018 |
+
+**Unexpected finding:** IgM has LOWER α and HIGHER β than IgG. The naive prediction is that IgG (deepest GC selection) should be most affinity-driven (highest β). The reversal is explained by the depth confound: IgM sequences are less mutated (mean n_mut_H ≈ 13.8 vs IgG ≈ 22.0), so Φ_S is smaller in absolute terms, making β and γ larger as fractions. This is a scale artifact of the strategy vector definition, not a biological reversal. **The strategy vector requires depth-normalization before isotype comparisons are meaningful.**
+
+### B2 — Per-germline strategy profiles (53 germlines, n ≥ 100)
+
+Notable germlines:
+
+| V gene | n | Mean α | Mean β | Mean γ | λ_R (Step 5) | Notes |
+|--------|---|--------|--------|--------|------------|-------|
+| IGHV3-23 | 141,121 | 0.960 | 0.039 | 0.001 | 0 | Most structurally dominated; lowest γ |
+| IGHV3-21 | 53,495 | 0.910 | 0.065 | 0.024 | 0.072 | Highest β + γ in top germlines; known polyreactivity |
+| IGHV1-2 | 79,141 | 0.937 | 0.053 | 0.011 | 0.183 | Highest λ_R but modest γ — λ_R ≠ γ |
+| IGHV1-69 | — | 0.882 | 0.036 | 0.082 | 0 | Exceptionally high γ=8.2%; anti-HA stem / polyreactive |
+
+**Key insight — λ_R vs γ dissociation:** IGHV1-2 has the highest cross-sectional λ_R (0.183) but only modest γ (0.011). IGHV1-69 has γ=0.082 (highest) but λ_R≈0. These measure different things: λ_R is the KKT exchange rate (affinity cost per unit reactivity reduction); γ is the reactivity share of the total objective budget. They are complementary, not redundant.
+
+### B4 — Germline fingerprints
+
+Composite table compiled for 53 germlines: R_AID, λ_S/λ_R (Steps 5 and 5b), mean α/β/γ, Pareto hypervolume.
+
+Top germlines by λ_R (Step 5):
+
+| V gene | λ_R | γ | R_AID | HV proxy |
+|--------|-----|---|-------|----------|
+| IGHV1-2 | 0.183 | 0.011 | 0.248 | 0.396 |
+| IGHV1-58 | 0.114 | 0.043 | 0.229 | 0.445 |
+| IGHV3-21 | 0.072 | 0.024 | 0.520 | 0.294 |
+
+### Missing outputs (cells ran to completion; disk/path issue)
+
+`strategy_vectors.parquet` and `strategy_vectors.csv` (1.46M rows × 13 cols) and `strategy_by_germline.csv` were not found in `results/tables/`. Other outputs (figures, `strategy_by_isotype.csv`, `germline_fingerprints.csv`) were created. Likely a large-file write issue or path error on HPC. Investigate on re-run.
