@@ -1,0 +1,2 @@
+analysis,param,estimate,ci_lo_95,ci_hi_95,r2,n_edges
+within_lineage_r_only,lambda_R,0.0,0.0,0.0,0.0,8296
