@@ -33,6 +33,53 @@ IgM's low hypervolume is consistent with its mainly naive/early memory origin; m
 
 ---
 
+## 2026-03-16 — Step 7 (Hamiltonian dynamics): first results
+
+### Dataset
+
+- 2,581 lineages ≥5 members; 30,108 sequences; 8,296 pseudotime edges
+- Lineage sizes: power-law distribution (8,574 size-2; 829 size-5; 323 size-≥20; max=422)
+- 54.5% IgM-dominated lineages
+
+### D2 — Φ_A is anti-directed (41.4% < 50%)
+
+**Finding:** Along pseudotime trajectories, Φ_A increases more often than it decreases. Contrary to the Hamiltonian prediction.
+
+**Interpretations:**
+1. IgM memory B cells (54.5% of lineages) may not undergo strong affinity selection — stored for recall responses, not continuously refined in GC
+2. Pseudotime ordering by n_mut_H conflates siblings with ancestor-descendants at tied depths → noise
+3. phi_A R/S ratio may saturate at high mutation counts, becoming insensitive to single-mutation changes
+
+**Φ_S decreases only 5.1% of edges** — confirms the ΔΦ_S monotonicity structural issue.
+
+### D3 — ΔΦ_S monotonicity: a structural bug for within-lineage regression
+
+**Bug:** `phi_S = n_mut_CDR × PHI_S_CDR + n_mut_FWR × PHI_S_FWR` is a cumulative sum that can only increase with depth. Therefore ΔΦ_S ≥ 0 for every edge, NNLS pins λ_S ≈ 0, and pooled R² = 0.
+
+**Note:** This is NOT a bug in the cross-sectional regression (Steps 5/5b), where phi_S is compared across sequences at different depths. It only breaks the within-lineage edge-level regression.
+
+**Fix needed:** Use position-specific −log(ω_i) penalties from `omega_per_position.parquet` to assign structural cost to individual mutations. Requires Step 0 per-position mutation data.
+
+**D3c (λ_R-only regression) added:** ΔΦ_R varies in both directions — clean test of reactivity constraint alone. Results pending re-run.
+
+**Per-lineage signal despite pooled failure:** 343/931 lineages (37%) R²>0.1; 214 (23%) R²>0.3. 43.9% have λ_R>0 (vs 0% cross-sectional). The reactivity constraint is lineage-specific and detectable within some lineages.
+
+### D4 — T_eff decreases with depth from bin 6–30 (partial Hamiltonian support)
+
+T_eff: 0.414 (1-5) → 0.365 → 0.304 → 0.301 → 0.294 → 0.263 (26-30) → 0.454 (31+, anomaly)
+
+The consistent decrease from depth 6 to 30 is consistent with selection tightening near the constraint boundary. The 31+ uptick is Var(v_S) blowing up (1.09 vs ~0.4) — likely outlier hypermutators. Spearman ρ=−0.25 all bins; stronger when 31+ excluded.
+
+### Bugs fixed
+
+1. NaN R² propagation: `np.nan` stored as float in Polars propagates through mean/std → fix to `None` (Polars null)
+2. Summary median R² printed as NaN → fixed to use null-filtered Polars series
+3. Added D3c λ_R-only regression
+4. Added 31+ bin exclusion in T_eff trend test
+5. D3 title updated with ΔΦ_S monotonicity warning
+
+---
+
 ## 2026-03-16 — Step 7 (Hamiltonian dynamics): notebook coded
 
 ### Design decisions
