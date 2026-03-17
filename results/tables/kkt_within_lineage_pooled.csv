@@ -1,0 +1,3 @@
+analysis,param,estimate,ci_lo_95,ci_hi_95,r2,n_edges
+within_lineage_pooled,lambda_S,0.0026551068956707576,0.0,0.013148244195146251,0.00003095552961174253,8296
+within_lineage_pooled,lambda_R,0.0,0.0,0.0,0.00003095552961174253,8296
