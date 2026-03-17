@@ -1166,3 +1166,94 @@ This dichotomy (framework-mediated vs CDR3-mediated autoreactivity) is a mechani
 
 **Notebook coded 2026-03-15 — not yet run.**
 5. IGHV3-72 cross-step concordance: lowest Φ_A (most affinity-selected in A1) + large V-gene coefficient (+1.777 in R1 logistic regression) = this germline is both the most positively selected for affinity AND the most memory-enriched. Worth profiling its antigen targets.
+
+---
+
+## 2026-03-17 — Step 7 (Hamiltonian dynamics): final results + post-mortem
+
+### Summary of four calculations
+
+| Calc | Test | Expected | Actual | Verdict |
+|------|------|----------|--------|---------|
+| D1 | Trajectory mapping | Trajectories move toward Pareto front | Visualised; 100 largest lineages show directed motion in 2D projections | ✅ Qualitative support |
+| D2 | Φ_A directionality | >50% edges with Φ_A↓ | 41.4% (p≈0.9 vs H₀=0.5) | ❌ Contrary to model |
+| D3 | Within-lineage KKT | R² > cross-sectional 0.0004 | Pooled R²=0.000 (worse); per-lineage R²>0.1 in 37% of lineages | ⚠️ Structural bug |
+| D4 | T_eff vs depth | T_eff decreases monotonically | ρ=−1.0 bins 6–30 (p<0.001); 31+ anomaly | ✅ Partial support |
+
+### Expected findings confirmed
+- **D4 T_eff decrease (bins 6–30):** Consistent with Hamiltonian prediction that selection tightens near the constraint boundary. Spearman ρ=−1.0 excluding the 31+ outlier bin.
+- **IgM dominance in multi-member lineages:** 54.5% IgM-dominated — consistent with known biology of clonal expansion without class switching.
+- **Per-lineage KKT heterogeneity:** Some lineages show R²>0.3 and λ_R>0. Reactivity constraint is lineage-specific.
+
+### Unexpected findings
+1. **D2 anti-directionality (41.4% < 50%):** Theory predicted Φ_A decreases along trajectories. The IgM majority (54.5% of lineages) likely explains this: IgM memory B cells are stored for recall responses, not continuously refined in GC. Per-isotype stratification needed.
+2. **λ_R>0 in 43.9% of per-lineage NNLS vs 0% cross-sectional (Step 5):** Reactivity constraint is lineage-specific and invisible at population level. Individual lineages have detectable reactivity pressure that averages out. This is a genuinely new finding — the constraint operates at the clonal family level.
+3. **T_eff 31+ anomaly:** Var(v_S) = 1.09 at depth 31+, vs ~0.4 at lower bins. Caused by a small number of ultra-hypermutated outlier sequences. Must exclude 31+ or cap SHM depth in downstream analyses.
+4. **Pooled R²=0.000 (D3b worse than cross-sectional):** Φ_S monotonicity structural bug makes ΔΦ_S ≥ 0 for all edges → NNLS cannot fit the KKT model within lineages. Requires position-specific −log(ω_i) structural cost to resolve.
+
+### Key structural insight: cumulative vs incremental Φ_S
+- Current: `phi_S = n_mut_CDR × PHI_S_CDR + n_mut_FWR × PHI_S_FWR` — cumulative sum of mutation counts × region-mean weights
+- Problem: ΔΦ_S ≥ 0 for every edge (only 5.1% negative, at noise floor)
+- Fix: use `omega_per_position.parquet` to assign individual −log(ω_i) costs per mutation per position. This makes ΔΦ_S a true incremental structural cost that can take both signs within a lineage (some positions are less costly than others).
+
+### Known residual issues for future work
+1. Pseudotime approximation: ordering by n_mut_H conflates siblings at the same depth
+2. IgM confound: stratified D2/D3 analysis needed (IgG-only, IgA-only)
+3. Φ_S monotonicity: fix requires per-position mutation data from Step 0
+
+---
+
+## 2026-03-17 — Step 5c design: germline-as-lineage endpoint approach
+
+### Problem recap (Step 5b limitation)
+Step 5b (endpoint-based Lagrange) was designed to fix the stage-mixing confound of Step 5. However, 98.9% of memory sequences are singletons in their clonal lineage (because clonal family assignment used the full 4.27M dataset; most memory sequences' relatives are in the naive compartment). This left only 14,907 multi-member lineage endpoints — insufficient for stable per-germline regression.
+
+### Proposed solution: germline as depth-0 pseudo-member
+For each memory sequence, its v_gene germline provides a known depth-0 anchor:
+- Germline is the biological starting point of every B cell lineage
+- phi_S(germline) = 0 (no mutations → no structural cost)
+- phi_A(germline) = 0 (no R/S mutations → no affinity proxy signal)
+- phi_R(germline) ≈ mean phi_R of naive sequences for that v_gene (best available proxy for germline reactivity baseline)
+
+By adding the germline as a synthetic depth-0 member, every singleton becomes a 2-member pseudo-lineage: {germline, singleton}. Multi-member lineages gain a proper depth-0 anchor.
+
+**Sample size after:** ~1.5M memory sequences contribute one endpoint each (vs 14,907 in 5b).
+
+### Mathematical analysis: is this new vs Step 5?
+- ΔΦ_A = phi_A(endpoint) − phi_A(germline) = phi_A(endpoint) − 0 = phi_A(endpoint) [for A and S]
+- ΔΦ_R = phi_R(endpoint) − phi_R(v_gene_naive_mean) [new vs Step 5; isolates maturation-driven reactivity change]
+- After within-germline demeaning: the regression tests within-v_gene variation in ΔΦ → same structure as Step 5 but with ΔΦ_R corrected for germline baseline
+
+**Key improvement over Step 5:** ΔΦ_R removes the v_gene-specific baseline reactivity (encoded in the germline), isolating the somatic maturation contribution to reactivity change. This is the correct quantity for the KKT condition.
+
+### Design for `05c_lagrangian.ipynb`
+
+**L0c — Germline anchor table:**
+For each v_gene, compute:
+- `phi_R_germ` = mean phi_R of memory-compartment naive sequences with that v_gene (as germline proxy)
+- `phi_A_germ` = 0 (convention)
+- `phi_S_germ` = 0 (convention)
+
+**L1c — Pseudo-lineage endpoint dataset (~1.5M):**
+- Memory sequences: group by `lineage` if multi-member (≥2), else by `seq_name`
+- For each group: select endpoint = member with max `n_R_H` (most AA replacements)
+- Compute ΔΦ = endpoint_phi − germline_anchor_for_v_gene
+- Result: one ΔΦ triplet per memory sequence
+
+**L2c — Global germline-anchored KKT regression:**
+- −ΔΦ_A = λ_S × ΔΦ_S + λ_R × ΔΦ_R (NNLS + Huber)
+- Within-germline demeaning (group by v_gene)
+- Bootstrap 95% CI
+
+**L3c — Per-germline regression:**
+- ≥500 endpoints per germline (vs ≥100 in 5b; should be satisfied for all major germlines)
+- Direct comparison with Step 5 and Step 5b per-germline λ values
+
+**L4c — Comparison figure:**
+- Bar chart: λ_S and λ_R across Steps 5, 5b, 5c per germline
+- Shows whether the germline baseline correction changes the reactivity constraint landscape
+
+**Outputs:**
+- `results/tables/lambda_global_endpoints_v2.csv`
+- `results/tables/lambda_by_germline_endpoints_v2.csv`
+- Figures: fig_l1c_global.png, fig_l2c_per_germline.png, fig_l3c_comparison.png
